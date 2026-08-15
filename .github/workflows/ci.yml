@@ -1,0 +1,318 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Daily advisory sweep. A new RustSec advisory against a payments
+    # dependency should surface within a day, not on the next push.
+    - cron: "17 4 * * *"
+
+# Least privilege: no job needs write access.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  # On a `schedule` trigger `github.ref` resolves to refs/heads/master, so a
+  # cron run would otherwise share a group with master pushes and get killed by
+  # the next one. Note `cancel-in-progress` is evaluated on the *incoming* run,
+  # so gating it on the event name cannot protect the cron — the push evaluates
+  # it, not the sweep. Isolating the cron in its own group is what actually
+  # works, and lets cancellation stay unconditional for everything else.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'schedule' }}
+  cancel-in-progress: true
+
+# Every action is pinned to a commit SHA (not a tag): tags are mutable, and a
+# compromised upstream can repoint one at malicious code. The trailing comment
+# records the human-readable version. .github/dependabot.yml keeps the pins
+# from rotting into unpatched versions — except `dtolnay/rust-toolchain`, which
+# publishes no release tags, so its pin is a bare `master` commit that
+# Dependabot (which resolves SHA pins against tags) will not bump. Refresh that
+# one by hand.
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Every job that compiles gates on `fmt`. It is the cheapest job by an order
+  # of magnitude, and without the gate a single formatting slip fans out ~13
+  # compile jobs before anything fails. `deny` and `release-gate` compile
+  # nothing, so they stay ungated and report independently.
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      # `persist-credentials: false` on every checkout: no CI job pushes, and
+      # this keeps a usable token out of .git/config while build scripts and
+      # proc macros from the dependency tree execute — including on fork PRs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2c7215f
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # ---------------------------------------------------------------------------
+  # The feature matrix is the point of this file. The crate has optional
+  # dependencies, so it is easy to ship a combination that does not compile.
+  #
+  # `--no-default-features` is the load-bearing one: the core is meant to be
+  # transport-agnostic, and this is the job that catches an accidental
+  # `reqwest` reference leaking out of a provider module into the core.
+  #
+  # The `mollie+*` entries are also paired with `--no-default-features`: without
+  # it, `--features mollie,rustls-tls` is identical to the default build (both
+  # default features are already on) and the entry tests nothing extra.
+  # `mollie+native-tls` exists so the `native-tls` backend is actually built at
+  # least once — it is otherwise never exercised outside `--all-features`,
+  # which enables both TLS backends together and would not catch a
+  # `native-tls`-only compile error.
+  #
+  # `serde` is paired with `--no-default-features` for the same reason as the
+  # `mollie+*` entries above: without it, `serde` is otherwise only ever
+  # compiled as part of `--all-features`, alongside `mollie`, and a
+  # `serde`-only compile error (e.g. from the core types' `Serialize`/
+  # `Deserialize` derives) would never be caught on its own.
+  clippy:
+    name: clippy (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    needs: fmt
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no-default-features
+            features: --no-default-features
+          - name: mollie+rustls
+            features: --no-default-features --features mollie,rustls-tls
+          - name: mollie+native-tls
+            features: --no-default-features --features mollie,native-tls
+          - name: serde
+            features: --no-default-features --features serde
+          - name: all-features
+            features: --all-features
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2c7215f
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # `shared-key`, not `key`: `key` is *appended* to rust-cache's
+          # automatic per-job key, so two different jobs can never share a
+          # cache through it. `shared-key` replaces the per-job component, so
+          # every job compiling the same feature set — clippy, test, and the
+          # docs/publish jobs below — restores one cache entry instead of
+          # downloading and rebuilding the same dependency graph four times.
+          shared-key: ${{ matrix.name }}
+      - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    needs: fmt
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no-default-features
+            features: --no-default-features
+          - name: mollie+rustls
+            features: --no-default-features --features mollie,rustls-tls
+          - name: mollie+native-tls
+            features: --no-default-features --features mollie,native-tls
+          - name: serde
+            features: --no-default-features --features serde
+          - name: all-features
+            features: --all-features
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2c7215f
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Same feature set as the matching clippy leg — same cache.
+          shared-key: ${{ matrix.name }}
+      # Plain `cargo test` (no `--all-targets`) so doctests run too — the
+      # README's examples become doctests if lib.rs includes it.
+      - run: cargo test ${{ matrix.features }}
+
+  # ---------------------------------------------------------------------------
+  # Minimum supported Rust version. Pinned to `rust-version` in Cargo.toml.
+  # Bumping this is a semver-visible change: bump both together.
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    needs: fmt
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2c7215f
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Its own key for legibility. rust-cache already folds the rustc
+          # release and commit hash into the key, so sharing with the
+          # all-features legs would have produced two separate entries anyway
+          # rather than thrashing — this just makes the split explicit.
+          shared-key: msrv
+      # `--locked` so a transitive dependency bumping its own MSRV cannot
+      # silently break this job — it fails on the committed lockfile instead.
+      - run: cargo check --locked --all-targets --all-features
+
+  # ---------------------------------------------------------------------------
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    needs: fmt
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2c7215f
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # `cargo doc --all-features` compiles the same dependency graph as
+          # the `all-features` clippy/test legs, so it rides their cache
+          # instead of populating a third copy of it.
+          shared-key: all-features
+      - run: cargo doc --no-deps --all-features
+        env:
+          # Broken intra-doc links and missing-docs violations fail the build,
+          # matching what docs.rs will do on publish. Set on the step, not the
+          # job: rust-cache hashes every RUST*/CARGO*/CC*/CFLAGS/CXX/CMAKE env
+          # var it can see into its key, so a job-level RUSTDOCFLAGS would give
+          # this job a different key from the legs it is meant to share with.
+          RUSTDOCFLAGS: -D warnings
+
+  # ---------------------------------------------------------------------------
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    # Deliberately not gated on `fmt`: it compiles nothing, so there is no fan-
+    # out to protect against, and a licence/advisory failure is worth knowing
+    # about even on a badly formatted branch.
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          # Runs advisories + licenses + bans + sources in one pass.
+          command: check
+
+  # ---------------------------------------------------------------------------
+  # Catches packaging problems that no other job sees: files missing from the
+  # published tarball because of `include`, metadata rejected by crates.io,
+  # or a path/git dependency that cannot be published.
+  publish-dry-run:
+    name: cargo publish --dry-run
+    runs-on: ubuntu-latest
+    needs: fmt
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2c7215f
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Its own key, deliberately. `cargo publish` verifies by extracting
+          # the tarball to target/package/<name>-<version>/ and building there,
+          # so none of a matrix leg's target/ is reusable — only the ~/.cargo
+          # registry half would be. Sharing a leg's key would also write the
+          # extracted package tree back into the entry that leg restores.
+          shared-key: publish
+      - run: cargo publish --dry-run --locked
+
+  # ---------------------------------------------------------------------------
+  # PR-only. release-plz tags the merge commit and a tag-triggered workflow
+  # cuts the GitHub Release from the matching CHANGELOG.md section. If that
+  # section is missing at the tagged commit the release fails irrecoverably
+  # (the tag points at an immutable commit), so block the merge here instead.
+  # Passes on normal PRs because the already-released version keeps its section.
+  #
+  # Not gated on `fmt`: it compiles nothing and its failure mode is an
+  # authoring mistake that should be reported alongside a formatting one.
+  release-gate:
+    name: changelog gate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: changelog has section for crate version
+        run: |
+          set -euo pipefail
+          # `|| true` so a non-matching grep does not trip `set -e` before the
+          # explicit check below can emit an annotation — an aborted step with
+          # no `::error::` is invisible in the PR's checks summary.
+          VERSION=$(grep -m1 '^version = "' Cargo.toml | cut -d'"' -f2 || true)
+          if [ -z "${VERSION}" ]; then
+            echo "::error::Could not read 'version = \"...\"' from Cargo.toml."
+            exit 1
+          fi
+          echo "Crate version: ${VERSION}"
+          # `grep -F` (fixed string) throughout: a version contains dots, and
+          # as a regex `.` matches any character, so `0.1.0` would also accept
+          # a heading for `0x1y0`. The trade-off is losing the `^` anchor,
+          # which -F cannot express — acceptable, since a false pass now needs
+          # the exact heading text to appear mid-line somewhere in the file.
+          if ! grep -qF -- "## [${VERSION}] - " CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${VERSION}] - ...' section."
+            echo "Release PRs must roll [Unreleased] into [${VERSION}] before merge."
+            exit 1
+          fi
+          if ! grep -qF -- "[${VERSION}]: " CHANGELOG.md; then
+            echo "::error::CHANGELOG.md is missing the '[${VERSION}]: ...' link reference."
+            echo "Release PRs must roll [Unreleased] into [${VERSION}] before merge."
+            exit 1
+          fi
+          echo "CHANGELOG.md has a complete section for ${VERSION}."
+
+  # ---------------------------------------------------------------------------
+  # Not part of the PR fan-out: runs on the daily cron against the default
+  # branch so a newly published advisory is reported without waiting for
+  # someone to push, plus on manual dispatch so the cron path is testable
+  # without editing the schedule. (On a dispatch this duplicates `deny`, which
+  # already covers advisories — harmless, and worth the testability.)
+  #
+  # Do NOT mark this a required status check: it is skipped on pull_request,
+  # and a skipped check never reports success, so every PR would hang.
+  advisories:
+    name: advisories (cron)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories

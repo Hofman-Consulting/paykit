@@ -1,0 +1,52 @@
+[package]
+name = "paykit"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Payment provider abstraction with a Mollie implementation"
+repository = "https://github.com/stefanhofman/paykit"
+documentation = "https://docs.rs/paykit"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+keywords = ["payments", "mollie", "payment-gateway", "checkout", "ecommerce"]
+categories = ["api-bindings", "web-programming::http-client"]
+# Allowlist rather than a denylist: a new root-level config file (another CI
+# manifest, a tool's dotfile) then cannot silently ship to crates.io just because
+# nobody remembered to exclude it. The risk is the mirror image — an over-narrow
+# allowlist dropping a file the crate needs — and `publish-dry-run` in CI catches
+# that, since it packages and builds from the resulting tarball.
+#
+# `tests/` is deliberately absent: consumers never run it, and leaving it out
+# keeps the published tarball small. Cargo.toml and Cargo.lock are always
+# included by Cargo itself and must not be listed here.
+include = ["src/**", "README.md", "LICENSE-APACHE", "LICENSE-MIT", "CHANGELOG.md"]
+
+[features]
+default = ["mollie", "rustls-tls"]
+mollie = ["dep:reqwest", "dep:serde_json"]
+rustls-tls = ["reqwest?/rustls-tls"]
+native-tls = ["reqwest?/native-tls"]
+# Derives Serialize/Deserialize on the domain types (Payment, Money, ...) for
+# consumers that persist or forward them. `serde` itself is always a dependency,
+# so this gates only the derives.
+serde = []
+
+[dependencies]
+async-trait = "0.1"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+# Optional: pulled in only by a provider implementation.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+], optional = true }
+serde_json = { version = "1.0", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+proptest = "1"
+serde_json = "1.0"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
