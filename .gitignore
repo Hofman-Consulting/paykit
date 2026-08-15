@@ -1,0 +1,5 @@
+/target
+# Cargo.lock is committed: current guidance for libraries too, and `cargo publish
+# --locked` / the MSRV CI job both depend on it.
+.env
+.DS_Store

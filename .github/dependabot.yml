@@ -1,0 +1,22 @@
+version: 2
+
+updates:
+  # The necessary counterpart to SHA-pinning every action in the workflows.
+  # A pin freezes the code that runs in CI, which is the point — but it also
+  # freezes it past the upstream security fix that made the next tag. Without
+  # an updater, pins silently rot into permanently-unpatched actions, trading
+  # tag-hijack risk for a strictly worse one.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  # Cargo updates matter independently of the daily cargo-deny advisory sweep,
+  # which only sees what RustSec publishes. `webpki-roots` is a vendored
+  # snapshot of the Mozilla CA root store: when a root is distrusted, no
+  # advisory is ever filed, so the cron cannot detect it. The only signal is a
+  # new crate release, which is exactly what Dependabot watches.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly

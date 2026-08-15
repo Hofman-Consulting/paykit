@@ -1,0 +1,110 @@
+# cargo-deny configuration.
+#
+# Run locally with:
+#   cargo deny check
+#   cargo deny check advisories   # just the RustSec database
+#
+# This crate handles money, so the dependency tree is treated as part of the
+# attack surface: a vulnerable or abandoned transitive dependency is a release
+# blocker, not a warning.
+
+[graph]
+# Check every feature combination's dependencies, not just the default set —
+# `native-tls` pulls in an entirely different TLS stack than `rustls-tls`.
+all-features = true
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Security advisories (RustSec)
+# ---------------------------------------------------------------------------
+[advisories]
+# Schema version 2. The old `vulnerability` / `unmaintained` / `notice` /
+# `severity-threshold` keys are gone: vulnerabilities and unsound/unmaintained
+# advisories are denied unconditionally, and anything tolerated must be listed
+# explicitly in `ignore` below with a justification.
+version = 2
+
+# Flag unmaintained crates anywhere in the tree, including transitively.
+unmaintained = "all"
+
+# Yanked crates mean the lockfile can no longer be reproduced. Hard failure.
+yanked = "deny"
+
+# Every entry here needs a comment saying why it is tolerated and what the exit
+# plan is. Empty is the desired steady state.
+ignore = []
+
+# ---------------------------------------------------------------------------
+# Licences
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+
+# Permissive licences only. Nothing copyleft, nothing with a source-disclosure
+# or network-use obligation, so downstream consumers can vendor this crate into
+# a closed-source application without a legal review.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+# Require a high-confidence licence match; a fuzzy match on a hand-edited
+# licence file is not good enough to auto-approve.
+confidence-threshold = 0.93
+
+# Per-crate exceptions go here (crate name + the licence being allowed for it
+# alone). Prefer this over widening `allow` globally.
+exceptions = [
+    # CDLA-Permissive-2.0 meets the same bar as everything in `allow` above: no
+    # copyleft, no source-disclosure obligation, no network-use clause. 2.0 also
+    # dropped the attribution requirement that 1.0 carried, so there is nothing
+    # left for a downstream consumer to comply with.
+    #
+    # It is a *data* licence, and that is exactly why it applies here:
+    # webpki-roots ships the Mozilla CA root store as a dataset rather than as
+    # code. It reaches this tree through reqwest's rustls backend, which needs
+    # the root certificate bundle to verify TLS.
+    #
+    # Scoped to this one crate rather than added to the global `allow` list, per
+    # the guidance above: a data licence is not something we want silently
+    # accepted for a future dependency that ships actual code.
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+]
+
+# ---------------------------------------------------------------------------
+# Bans
+# ---------------------------------------------------------------------------
+[bans]
+# Duplicate versions bloat the build and mean two copies of a crate to patch
+# when an advisory lands. Warn rather than deny: with reqwest in the tree this
+# is largely outside our control.
+multiple-versions = "warn"
+
+# Wildcard version requirements make the lockfile meaningless.
+wildcards = "deny"
+
+# `highlight` makes the duplicate-version output show the shortest path to the
+# crate that pulled the extra copy in.
+highlight = "all"
+
+deny = []
+skip = []
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+[sources]
+# Only crates.io. A dependency served from an unknown registry or a git URL
+# has no yank mechanism and no advisory coverage.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
