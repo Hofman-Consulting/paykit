@@ -183,10 +183,16 @@ jobs:
       - run: cargo test ${{ matrix.features }}
 
   # ---------------------------------------------------------------------------
-  # Minimum supported Rust version. Pinned to `rust-version` in Cargo.toml.
-  # Bumping this is a semver-visible change: bump both together.
+  # Minimum supported Rust version, read from `rust-version` in Cargo.toml —
+  # the single source of truth. Bumping the MSRV is a semver-visible change,
+  # but it is a one-line edit to Cargo.toml: this job follows automatically.
+  #
+  # The job `name:` deliberately carries no version number. Check names are what
+  # branch protection matches on, so `MSRV (1.88)` would silently stop reporting
+  # the day the MSRV moved, and every PR would block waiting for a check that no
+  # longer exists. The actual version is echoed in the step below instead.
   msrv:
-    name: MSRV (1.88)
+    name: MSRV
     runs-on: ubuntu-latest
     needs: fmt
     if: github.event_name != 'schedule'
@@ -194,9 +200,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - id: msrv
+        name: read MSRV from Cargo.toml
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 '^rust-version = "' Cargo.toml | cut -d'"' -f2 || true)
+          if [ -z "${VERSION}" ]; then
+            echo "::error::Could not read 'rust-version = \"...\"' from Cargo.toml."
+            exit 1
+          fi
+          echo "MSRV is ${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2c7215f
         with:
-          toolchain: "1.88"
+          toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Its own key for legibility. rust-cache already folds the rustc
