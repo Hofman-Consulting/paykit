@@ -1,0 +1,137 @@
+# !! DO NOT LAND THIS FILE IN THE FIRST PUSH TO master !!
+#
+# This workflow publishes to crates.io. It must only be added to the repository
+# once all of the following exist:
+#
+#   1. The release-plz GitHub App is created AND installed on this repository.
+#   2. `RELEASE_PLZ_APP_CLIENT_ID` is set as a repository *variable* and
+#      `RELEASE_PLZ_APP_PRIVATE_KEY` as a repository *secret*.
+#   3. The `release` environment exists, with deployment branches restricted to
+#      `master`.
+#   4. crates.io Trusted Publishing is configured for `paykit`, pointing at this
+#      repository, this workflow file, and the `release` environment.
+#
+# If this file is present on the initial commit, that first push triggers a
+# publish that cannot succeed — and it fails *after* release-plz has already
+# pushed the `v0.1.0` tag, leaving the repository in a half-released state that
+# has to be unwound by hand. The first publish of 0.1.0 is done manually from a
+# workstation; release-plz takes over from 0.1.1 onwards.
+
+name: Release-plz
+
+on:
+  push:
+    branches: [master]
+
+# Least privilege at the top level; each job opts into exactly what it needs.
+permissions: {}
+
+# Same pinned toolchain as ci.yml. release-plz builds the crate to verify and
+# publish it, so it should use the version CI validated — not whatever `stable`
+# happens to be on release day.
+#
+# Keep in sync with PINNED_TOOLCHAIN in ci.yml.
+env:
+  PINNED_TOOLCHAIN: "1.97.1"
+
+jobs:
+  release-plz-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # crates.io Trusted Publishing via OIDC; release-plz mints the token
+      # natively — deliberately no CARGO_REGISTRY_TOKEN.
+      id-token: write
+    environment: release
+    concurrency:
+      # Never cancel an in-flight publish; queue instead.
+      group: release-plz-release
+      cancel-in-progress: false
+    steps:
+      # A GitHub App installation token rather than a PAT: it is scoped to this
+      # installation, expires after 1 hour, and can be revoked independently of
+      # any human account (revoking a PAT means touching the owner's account and
+      # breaks everything else that PAT was used for). A PAT would also be the
+      # only long-lived credential left in the release path.
+      - id: app-token
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        with:
+          # Client ID (Iv23li…), not the numeric App ID: the `app-id` input is
+          # deprecated in favour of `client-id`. It is an identifier rather than
+          # a credential, so it lives in Actions *variables*, not secrets; only
+          # the private key is sensitive.
+          client-id: ${{ vars.RELEASE_PLZ_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # release-plz needs full history.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2c7215f
+        with:
+          toolchain: ${{ env.PINNED_TOOLCHAIN }}
+      # No Swatinem/rust-cache here, deliberately. It would restore `~/.cargo`
+      # and `target/` into the one job that holds `id-token: write` and a live
+      # crates.io publish credential — and those restored contents are *executed*
+      # during the publish build, as build scripts and proc macros. A cache entry
+      # poisoned from any other job (caches are writable from any branch) would
+      # run with the publish credential in scope. The release job builds from
+      # cold; that cost is paid once per release.
+      #
+      # NOTE ON `permissions:` ABOVE: it scopes only the ephemeral GITHUB_TOKEN
+      # that Actions injects. It has NO effect on the App token used below, whose
+      # scope comes solely from the App's own permissions and installation. Read
+      # the block as least-privilege for the default token, not as a bound on
+      # what this job can do.
+      - uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
+        with:
+          command: release
+        env:
+          # App token, not the default GITHUB_TOKEN, so the pushed tag triggers
+          # github-release.yml (events from GITHUB_TOKEN do not trigger workflows).
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+  release-plz-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      # Only the latest master state matters for the release PR.
+      group: release-plz-pr
+      cancel-in-progress: true
+    steps:
+      # Same rationale as the release job: short-lived, installation-scoped,
+      # independently revocable. This job has no `environment:`, so a PAT here
+      # would have to be repo-scoped with no deployment-branch gate at all.
+      - id: app-token
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        with:
+          # Client ID (Iv23li…), not the numeric App ID: the `app-id` input is
+          # deprecated in favour of `client-id`. It is an identifier rather than
+          # a credential, so it lives in Actions *variables*, not secrets; only
+          # the private key is sensitive.
+          client-id: ${{ vars.RELEASE_PLZ_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # release-plz needs full history.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2c7215f
+        with:
+          toolchain: ${{ env.PINNED_TOOLCHAIN }}
+      # Caching is fine here: this job never publishes and holds no registry
+      # credential. Its own `shared-key` rather than one shared with the release
+      # job, so there is no cache entry reachable from both.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: release-plz-pr
+      # As above: the `permissions:` block scopes GITHUB_TOKEN only, not the App
+      # token passed below.
+      - uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
+        with:
+          command: release-pr
+        env:
+          # App token so ci.yml runs on the release PR.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
