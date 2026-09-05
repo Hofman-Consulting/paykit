@@ -67,7 +67,7 @@ jobs:
           # release-plz needs full history.
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2c7215f
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master @ 2c7215f
         with:
           toolchain: ${{ env.PINNED_TOOLCHAIN }}
       # No Swatinem/rust-cache here, deliberately. It would restore `~/.cargo`
@@ -118,7 +118,7 @@ jobs:
           # release-plz needs full history.
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master @ 2c7215f
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master @ 2c7215f
         with:
           toolchain: ${{ env.PINNED_TOOLCHAIN }}
       # Caching is fine here: this job never publishes and holds no registry
