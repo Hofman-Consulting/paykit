@@ -1,0 +1,93 @@
+# Local toolchain pin, so `cargo clippy` here agrees with CI.
+#
+# This file exists because a global mise config (`rust = "latest"`) exports
+# RUSTUP_TOOLCHAIN, and that environment variable outranks a `rust-toolchain.toml`
+# in rustup's precedence order. A repo-level rust-toolchain.toml would therefore be
+# silently ignored on a mise-managed machine; this pin is the one that wins.
+#
+# Keep the version in sync with PINNED_TOOLCHAIN in .github/workflows/ci.yml and
+# .github/workflows/release-plz.yml. Nothing automates that — rustc is not a
+# dependency, so Dependabot has no opinion about it.
+#
+# `include` in Cargo.toml is an allowlist, so this file cannot reach the published
+# crates.io tarball.
+[tools]
+# rustup's default profile, so clippy and rustfmt come with it.
+rust = "1.97.1"
+
+# The feature sets below are the clippy/test matrix from ci.yml. Any feature that
+# only ever compiles as part of `--all-features` can hide a compile error that is
+# specific to it, which is why each one also gets a `--no-default-features` leg.
+
+[tasks.fmt]
+description = "check formatting (as CI does)"
+run = "cargo fmt --all --check"
+
+[tasks.fmt-fix]
+description = "apply formatting"
+run = "cargo fmt --all"
+
+[tasks.clippy]
+description = "clippy over every feature set CI checks, warnings denied"
+run = '''
+set -euo pipefail
+for features in "--no-default-features" \
+                "--no-default-features --features mollie,rustls-tls" \
+                "--no-default-features --features mollie,native-tls" \
+                "--no-default-features --features serde" \
+                "--all-features"; do
+  echo "==> cargo clippy $features"
+  # Unquoted on purpose: $features is a flag list that must word-split.
+  cargo clippy --all-targets $features -- -D warnings
+done
+'''
+
+[tasks.test]
+description = "test over every feature set CI checks"
+run = '''
+set -euo pipefail
+# No `--all-targets`: it would silently drop doctests, which are the only thing
+# compiling the README's examples.
+for features in "--no-default-features" \
+                "--no-default-features --features mollie,rustls-tls" \
+                "--no-default-features --features mollie,native-tls" \
+                "--no-default-features --features serde" \
+                "--all-features"; do
+  echo "==> cargo test $features"
+  cargo test $features
+done
+'''
+
+[tasks.doc]
+description = "build docs the way docs.rs will, warnings denied"
+env = { RUSTDOCFLAGS = "-D warnings" }
+run = "cargo doc --no-deps --all-features"
+
+[tasks.msrv]
+description = "check the crate still builds on rust-version from Cargo.toml"
+run = '''
+set -euo pipefail
+msrv=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+[ -n "$msrv" ] || { echo "no rust-version in Cargo.toml" >&2; exit 1; }
+echo "==> MSRV $msrv"
+rustup toolchain install "$msrv" --profile minimal --no-self-update
+# `+toolchain` rather than plain `cargo`: it is the only form that outranks the
+# RUSTUP_TOOLCHAIN this file's [tools] pin exports, which would otherwise build
+# the MSRV check on 1.97 and prove nothing.
+cargo "+$msrv" check --locked --all-targets --all-features
+'''
+
+[tasks.deny]
+description = "advisories + licenses + bans + sources (needs cargo-deny installed)"
+run = "cargo deny check"
+
+[tasks.publish-check]
+description = "package and build from the tarball, catching `include` mistakes"
+run = "cargo publish --dry-run --locked"
+
+[tasks.ci]
+description = "everything CI runs, sequentially"
+# Sequential rather than `depends`, which mise may schedule concurrently: parallel
+# cargo invocations serialise on the build lock anyway, and interleaved output
+# makes a failure hard to attribute.
+run = "mise run fmt && mise run clippy && mise run test && mise run doc && mise run msrv && mise run deny"
