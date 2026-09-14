@@ -3,3 +3,6 @@
 # --locked` / the MSRV CI job both depend on it.
 .env
 .DS_Store
+# Per-machine mise overrides. mise.toml itself is committed — it carries the
+# toolchain pin that keeps local builds on the same rustc as CI.
+mise.local.toml
