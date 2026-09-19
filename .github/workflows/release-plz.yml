@@ -83,7 +83,7 @@ jobs:
       # scope comes solely from the App's own permissions and installation. Read
       # the block as least-privilege for the default token, not as a bound on
       # what this job can do.
-      - uses: release-plz/action@346832d73e3415c2ebd0432cba3a2bf5881e5f7d # v0.5.135
+      - uses: release-plz/action@8e61445f0b34e7c6d985255f2f1f05a36eb350dc # v0.5.137
         with:
           command: release
         env:
@@ -129,7 +129,7 @@ jobs:
           shared-key: release-plz-pr
       # As above: the `permissions:` block scopes GITHUB_TOKEN only, not the App
       # token passed below.
-      - uses: release-plz/action@346832d73e3415c2ebd0432cba3a2bf5881e5f7d # v0.5.135
+      - uses: release-plz/action@8e61445f0b34e7c6d985255f2f1f05a36eb350dc # v0.5.137
         with:
           command: release-pr
         env:
